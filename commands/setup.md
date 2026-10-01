@@ -193,11 +193,9 @@ On Windows require `node` and always use `dist/index.js`.
 
 **Important**: Do **not** reuse the macOS/Linux awk-based command on Windows + Git Bash. The `awk` fragment requires `'"'"'` quoting to nest single quotes inside `bash -c '...'`. After JSON encoding and decoding, this quoting breaks on Windows Git Bash, causing a silent syntax error that prevents the HUD process from starting (see [#326](https://github.com/jarrodwatts/claude-hud/issues/326)).
 
-**Important**: Do **not** `exec` the runtime itself from Git Bash either. Git Bash creates every native child suspended and resumes it a moment later. If Claude Code terminates the statusLine shell inside that window, the child is stranded suspended: it never executes a single instruction, so it also never exits, and only a manual kill removes it. When the exec target is the runtime, each stranded child is a ~36 MB `node.exe`, one per lost render, and they accumulate for as long as the machine stays up (see [#747](https://github.com/jarrodwatts/claude-hud/issues/747)).
+**Important**: Do **not** `exec` the runtime directly from Git Bash either. Git Bash starts native children suspended, so a statusLine shell killed mid-spawn strands a ~36 MB `node.exe` that never runs and never exits (see [#747](https://github.com/jarrodwatts/claude-hud/issues/747)). Launch through `cmd.exe` as the Windows + PowerShell path does: the worst case becomes a ~2 MB `cmd.exe` stub, and the launcher does the version lookup.
 
-Launch through `cmd.exe` instead, the way the Windows + PowerShell path already does. Git Bash then strands at worst a ~2 MB `cmd.exe` stub, and `node.exe` is started by `cmd.exe` through a plain Win32 `CreateProcess`, which has no suspended window. This also moves the version lookup into the launcher, so no `ls | sort -V | tail` pipeline runs on every refresh.
-
-1. Write the launcher. It is the same `statusline.mjs` as step 4 of **Windows + PowerShell** below; copy that body verbatim into a quoted heredoc so bash expands nothing. Run the block with no leading indentation: a quoted heredoc only ends on a `LAUNCHER` line that starts at column 0.
+1. Write the launcher: the same `statusline.mjs` as step 4 of **Windows + PowerShell** below, copied verbatim into a quoted heredoc so bash expands nothing. Run the block with no leading indentation, or the heredoc never ends.
 
    ```bash
    claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -207,22 +205,22 @@ Launch through `cmd.exe` instead, the way the Windows + PowerShell path already 
    LAUNCHER
    ```
 
-2. Write the `cmd.exe` shim next to it. `%~dp0` expands to the shim's own directory, so the generated statusLine command carries no runtime path and no nested quoting:
+2. Write the `cmd.exe` shim next to it (`%~dp0` is the shim's own directory):
 
    ```bash
    printf '@echo off\r\n"%s" "%%~dp0statusline.mjs"\r\n' "{RUNTIME_PATH_WIN}" \
      > "$claude_dir/plugins/claude-hud/statusline.cmd"
    ```
 
-   `{RUNTIME_PATH_WIN}` is the Windows form of the runtime detected in step 2, `cygpath -w "{RUNTIME_PATH}"`, typically `C:\Program Files\nodejs\node.exe`. Pass it as a `printf` argument, never inside the format string: `printf` expands backslash escapes in the format, so a literal `C:\Program Files\nodejs` would turn `\n` into a newline and split the file. Batch files also need CRLF line endings, which is why the format ends each line with `\r\n`.
+   `{RUNTIME_PATH_WIN}` is `cygpath -w "{RUNTIME_PATH}"`, typically `C:\Program Files\nodejs\node.exe`. Keep it a `printf` argument, because backslashes in the format string are escapes. Batch files need the CRLF line endings.
 
-3. Generate command. The `COLUMNS` probe stays for Claude Code versions older than v2.1.153, but it now exports the raw terminal width: the launcher applies the `- 4` padding itself, so subtracting here too would take 8 columns off.
+3. Generate command. Export the raw terminal width; the launcher subtracts the 4 columns of padding itself.
 
    ```
    cols=${COLUMNS:-}; case "$cols" in ""|*[!0-9]*) cols=$(stty size 2>/dev/null </dev/tty | awk '{print $2}');; esac; case "$cols" in ""|*[!0-9]*) cols=120;; esac; export COLUMNS="$cols"; exec "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/statusline.cmd"
    ```
 
-   Keep `exec`: Claude Code is already invoking the statusline through bash, so `exec` replaces that shell rather than adding another process to the chain.
+   Keep `exec` so the command replaces Claude Code's bash rather than adding a process.
 
 **Windows + PowerShell** (Platform: `win32`, Shell: `powershell`, `pwsh`, or `cmd`, OSTYPE: other/empty):
 
@@ -255,8 +253,6 @@ Launch through `cmd.exe` instead, the way the Windows + PowerShell path already 
 4. Write the Windows statusline launcher.
 
    Windows PowerShell startup plus `Get-ChildItem | Sort-Object [version]` can exceed Claude Code's render cadence on every statusLine refresh. Write a small Node launcher once during setup, then invoke it through `cmd.exe` on each refresh. The launcher uses the setup-time validated `node.exe`, preserves update discovery by finding the latest installed `claude-hud` version, and prefers inherited `COLUMNS` before falling back to 120.
-
-   Both Windows shells share this file, so keep the body below in sync with the heredoc in **Windows + Git Bash** above.
 
    The launcher file at `$claudeDir/plugins/claude-hud/statusline.mjs` should contain:
 
